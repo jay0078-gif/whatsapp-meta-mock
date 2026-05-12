@@ -7,6 +7,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppointmentModule } from './appointment/appointment.module';
 
 import { WhatsappModule } from './whatsapp/whatsapp.module';
+import { TemplateModule } from './template/template.module';
 
 @Module({
   imports: [
@@ -35,6 +36,8 @@ import { WhatsappModule } from './whatsapp/whatsapp.module';
     AppointmentModule,
 
     WhatsappModule,
+
+    TemplateModule,
   ],
 })
 export class AppModule {}
