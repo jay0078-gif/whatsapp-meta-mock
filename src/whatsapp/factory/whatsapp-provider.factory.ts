@@ -21,13 +21,14 @@ export class WhatsAppProviderFactory {
   ) {}
 
   getProvider(): IWhatsAppProvider {
-    const provider: string =
-      this.configService.get<string>('WHATSAPP_PROVIDER') ?? 'MESSAGE_BIRD';
+    const provider =
+      (this.configService.get<string>(
+        'WHATSAPP_PROVIDER',
+      ) as WhatsAppProvider) ?? WhatsAppProvider.MESSAGE_BIRD;
 
     switch (provider) {
       case WhatsAppProvider.META_WHATSAPP:
         return this.metaProvider;
-
       case WhatsAppProvider.MESSAGE_BIRD:
       default:
         return this.messageBirdProvider;
