@@ -56,7 +56,7 @@ export class SlotManagerService {
       .createQueryBuilder('doctor')
       .leftJoinAndSelect('doctor.slots', 'slot')
       .where('doctor.isActive = :active', { active: true })
-      .andWhere(':day = ANY(doctor.availableDays)', { day: dayName });
+      .andWhere('doctor.availableDays LIKE :day', { day: `%${dayName}%` });
 
     if (specialization) {
       query = query.andWhere('LOWER(doctor.specialization) = LOWER(:spec)', {

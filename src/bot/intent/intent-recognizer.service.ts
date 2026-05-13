@@ -75,10 +75,12 @@ export class IntentRecognizerService {
       /appointment/i,
       /schedule/i,
       /reserve/i,
-      /i need (a |an )?(doctor|specialist|physician|slot)/i,
+      /i need/i,
+      /i want (a |an )?(doctor|specialist|appointment)/i,
       /can (i|you) (get|have|book|schedule)/i,
       /available (slots?|timing|time)/i,
       /any slots?/i,
+      /looking for (a |an )?(doctor|specialist)/i,
     ];
 
     const cancelPatterns = [
