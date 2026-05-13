@@ -8,6 +8,7 @@ import { AppointmentModule } from './appointment/appointment.module';
 
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { TemplateModule } from './template/template.module';
+import { BotModule } from './bot/bot.module';
 
 @Module({
   imports: [
@@ -38,6 +39,8 @@ import { TemplateModule } from './template/template.module';
     WhatsappModule,
 
     TemplateModule,
+
+    BotModule,
   ],
 })
 export class AppModule {}
