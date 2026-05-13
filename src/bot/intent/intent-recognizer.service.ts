@@ -43,16 +43,25 @@ export class IntentRecognizerService {
   };
 
   private readonly timeKeywords: Record<string, string[]> = {
-    morning: ['morning', 'early', 'am'],
-    evening: ['evening', 'after work', 'pm', 'late'],
+    morning: ['morning', 'early'],
+    evening: ['evening', 'after work', 'late'],
     afternoon: ['afternoon', 'noon', 'lunch time'],
   };
 
   private readonly dateKeywords: Record<string, string[]> = {
-    today: ['today', 'now', 'asap', 'this evening', 'tonight', 'this morning'],
+    today: ['today', 'now', 'asap', 'tonight'],
     tomorrow: ['tomorrow', 'next day', 'tmrw', 'tmr'],
     weekend: ['weekend', 'saturday', 'sunday'],
   };
+
+  // Standalone slot-response words — user is answering a bot question
+  private readonly slotResponsePatterns: RegExp[] = [
+    /^(today|tomorrow|tmrw|tmr|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i,
+    /^(morning|afternoon|evening|am|pm)$/i,
+    /^(skin|general|cardiology|pediatrics|cardiologist|dermatologist)$/i,
+    /^\d{4}-\d{2}-\d{2}$/, // ISO date
+    /^\d{1,2}(st|nd|rd|th)?$/i, // "15th"
+  ];
 
   recognize(message: string): RecognizedIntent {
     const normalized = message.toLowerCase().trim();
@@ -67,6 +76,16 @@ export class IntentRecognizerService {
     );
 
     return { intent, entities, confidence, rawMessage: message };
+  }
+
+  /**
+   * Returns true if the message looks like a short slot-answer
+   * (e.g. "tomorrow", "morning", "skin") that the bot asked for.
+   * Used by BotService to route mid-conversation replies correctly.
+   */
+  isSlotResponse(message: string): boolean {
+    const normalized = message.toLowerCase().trim();
+    return this.slotResponsePatterns.some((p) => p.test(normalized));
   }
 
   private detectIntent(message: string): Intent {
@@ -142,7 +161,7 @@ export class IntentRecognizerService {
       entities.doctorName = `Dr. ${doctorMatch[1].trim()}`;
     }
 
-    // Extract date
+    // Extract date keyword
     for (const [date, keywords] of Object.entries(this.dateKeywords)) {
       if (keywords.some((kw) => message.includes(kw))) {
         entities.date = date;
@@ -150,7 +169,7 @@ export class IntentRecognizerService {
       }
     }
 
-    // Extract specific date like "15th", "may 15"
+    // Extract specific date like "15th may"
     const specificDate = message.match(
       /(\d{1,2})(st|nd|rd|th)?(\s+of)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
     );
@@ -158,11 +177,26 @@ export class IntentRecognizerService {
       entities.date = specificDate[0];
     }
 
-    // Extract time
+    // Extract ISO date
+    const isoDate = message.match(/\d{4}-\d{2}-\d{2}/);
+    if (isoDate) {
+      entities.date = isoDate[0];
+    }
+
+    // Extract day name as date
+    const dayMatch = message.match(
+      /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+    );
+    if (dayMatch && !entities.date) {
+      entities.date = dayMatch[1].toLowerCase();
+    }
+
+    // Extract specific time like "10am", "3:30 pm"
     const specificTime = message.match(/\d{1,2}(:\d{2})?\s*(am|pm)/i);
     if (specificTime) {
       entities.time = specificTime[0];
     } else {
+      // Extract time period keyword
       for (const [period, keywords] of Object.entries(this.timeKeywords)) {
         if (keywords.some((kw) => message.includes(kw))) {
           entities.time = period;

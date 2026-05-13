@@ -59,6 +59,7 @@ export class BotService {
       `Intent: ${recognized.intent} | confidence: ${recognized.confidence} | entities: ${JSON.stringify(recognized.entities)}`,
     );
 
+    // Merge any newly extracted entities into session context
     const ctx = (session.context ?? {}) as SessionContext;
     if (recognized.entities.specialization)
       ctx.specialization = recognized.entities.specialization;
@@ -67,27 +68,55 @@ export class BotService {
     if (recognized.entities.date) ctx.date = recognized.entities.date;
     if (recognized.entities.time) ctx.time = recognized.entities.time;
 
+    // Read previous intent BEFORE overwriting so we can detect mid-booking state
+    const previousIntent = session.lastIntent as Intent | null;
+
     session.context = ctx as Record<string, unknown>;
     session.lastIntent = recognized.intent;
     session.lastMessage = message;
 
+    this.logger.log(
+      `previousIntent: ${previousIntent ?? 'none'} | ctx: ${JSON.stringify(ctx)}`,
+    );
+
+    // Determine if we're mid-booking and the user is answering a slot question.
+    // Two conditions trigger this:
+    //   1. Previous intent was BOOK_APPOINTMENT and we still have missing slots
+    //   2. Current message looks like a short slot-answer (e.g. "tomorrow", "morning")
+    const midBooking =
+      previousIntent === Intent.BOOK_APPOINTMENT &&
+      !!(ctx.specialization ?? ctx.doctorName) &&
+      (!ctx.date || !ctx.time);
+
+    const isSlotAnswer = this.intentRecognizer.isSlotResponse(message);
+
+    const routeToBooking =
+      midBooking || (isSlotAnswer && !!(ctx.specialization ?? ctx.doctorName));
+
     let response: BotResponse;
 
-    switch (recognized.intent) {
-      case Intent.BOOK_APPOINTMENT:
-        response = await this.handleBookAppointment(userId, session, ctx);
-        break;
-      case Intent.CANCEL_APPOINTMENT:
-        response = await this.handleCancelAppointment(userId, session, ctx);
-        break;
-      case Intent.VIEW_APPOINTMENTS:
-        response = await this.handleViewAppointments(userId, session);
-        break;
-      case Intent.CHECK_AVAILABILITY:
-        response = await this.handleCheckAvailability(session, ctx);
-        break;
-      default:
-        response = this.handleUnknown(session);
+    if (routeToBooking) {
+      this.logger.log(
+        `Routing to handleBookAppointment (mid-booking slot fill)`,
+      );
+      response = await this.handleBookAppointment(userId, session, ctx);
+    } else {
+      switch (recognized.intent) {
+        case Intent.BOOK_APPOINTMENT:
+          response = await this.handleBookAppointment(userId, session, ctx);
+          break;
+        case Intent.CANCEL_APPOINTMENT:
+          response = await this.handleCancelAppointment(userId, session, ctx);
+          break;
+        case Intent.VIEW_APPOINTMENTS:
+          response = await this.handleViewAppointments(userId, session);
+          break;
+        case Intent.CHECK_AVAILABILITY:
+          response = await this.handleCheckAvailability(session, ctx);
+          break;
+        default:
+          response = this.handleUnknown(session);
+      }
     }
 
     await this.sessionRepo.save(session);
