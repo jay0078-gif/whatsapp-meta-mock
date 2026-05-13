@@ -15,6 +15,7 @@ export interface ITemplateMessageResponse {
   templateName: string;
   status: 'SENT' | 'DELIVERED' | 'FAILED';
   sentAt: string;
+  metaPayload?: object;
 }
 
 export interface IWhatsAppProvider {

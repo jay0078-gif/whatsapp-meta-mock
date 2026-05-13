@@ -8,21 +8,23 @@ const appointmentPayload = {
   appointmentDate: '2026-05-15',
 };
 
-const mockMetaResponse = {
+const mockMetaTemplateResponse = {
   success: true,
   provider: 'META_WHATSAPP',
-  messageId: 'meta-wamid-test-001',
+  messageId: 'meta-tmpl-test-001',
   to: '919999999999',
-  body: 'Hello Jay Patel, your appointment is confirmed for 2026-05-15.',
+  templateName: 'appointment_confirmation',
+  status: 'SENT',
   sentAt: '2026-05-15T10:00:00.000Z',
 };
 
-const mockMessageBirdResponse = {
+const mockMessageBirdTemplateResponse = {
   success: true,
   provider: 'MESSAGE_BIRD',
-  messageId: 'mb-test-001',
+  messageId: 'mb-tmpl-test-001',
   to: '919999999999',
-  body: 'Hi Jay Patel, your appointment on 2026-05-15 has been booked.',
+  templateName: 'appointment_confirmation',
+  status: 'SENT',
   sentAt: '2026-05-15T10:00:00.000Z',
 };
 
@@ -50,7 +52,10 @@ describe('AppointmentService', () => {
   describe('provider switching', () => {
     it('should use MetaProvider when factory returns MetaProvider', async () => {
       mockFactory.getProvider.mockReturnValue({
-        sendAppointmentMessage: jest.fn().mockResolvedValue(mockMetaResponse),
+        sendAppointmentMessage: jest.fn(),
+        sendTemplateMessage: jest
+          .fn()
+          .mockResolvedValue(mockMetaTemplateResponse),
       });
       const result = await service.createAppointment(appointmentPayload);
       expect(result.whatsappResponse.provider).toBe('META_WHATSAPP');
@@ -59,9 +64,10 @@ describe('AppointmentService', () => {
 
     it('should use MessageBirdProvider when factory returns MessageBirdProvider', async () => {
       mockFactory.getProvider.mockReturnValue({
-        sendAppointmentMessage: jest
+        sendAppointmentMessage: jest.fn(),
+        sendTemplateMessage: jest
           .fn()
-          .mockResolvedValue(mockMessageBirdResponse),
+          .mockResolvedValue(mockMessageBirdTemplateResponse),
       });
       const result = await service.createAppointment(appointmentPayload);
       expect(result.whatsappResponse.provider).toBe('MESSAGE_BIRD');
@@ -72,7 +78,10 @@ describe('AppointmentService', () => {
   describe('appointment notification flow', () => {
     it('should return appointment details and whatsapp response', async () => {
       mockFactory.getProvider.mockReturnValue({
-        sendAppointmentMessage: jest.fn().mockResolvedValue(mockMetaResponse),
+        sendAppointmentMessage: jest.fn(),
+        sendTemplateMessage: jest
+          .fn()
+          .mockResolvedValue(mockMetaTemplateResponse),
       });
       const result = await service.createAppointment(appointmentPayload);
       expect(result.success).toBe(true);
@@ -82,20 +91,29 @@ describe('AppointmentService', () => {
       expect(result.whatsappResponse.messageId).toBeDefined();
     });
 
-    it('should call sendAppointmentMessage with correct payload', async () => {
-      const mockSend = jest.fn().mockResolvedValue(mockMetaResponse);
+    it('should call sendTemplateMessage with appointment_confirmation template', async () => {
+      const mockSend = jest.fn().mockResolvedValue(mockMetaTemplateResponse);
       mockFactory.getProvider.mockReturnValue({
-        sendAppointmentMessage: mockSend,
+        sendAppointmentMessage: jest.fn(),
+        sendTemplateMessage: mockSend,
       });
       await service.createAppointment(appointmentPayload);
-      expect(mockSend).toHaveBeenCalledWith(appointmentPayload);
+      expect(mockSend).toHaveBeenCalledWith(
+        'appointment_confirmation',
+        expect.objectContaining({
+          patientName: 'Jay Patel',
+          phoneNumber: '919999999999',
+          appointmentDate: '2026-05-15',
+        }),
+      );
     });
   });
 
   describe('failure scenarios', () => {
     it('should propagate error when provider receives invalid phone number', async () => {
       mockFactory.getProvider.mockReturnValue({
-        sendAppointmentMessage: jest
+        sendAppointmentMessage: jest.fn(),
+        sendTemplateMessage: jest
           .fn()
           .mockRejectedValue(new Error('Invalid phone number: 123')),
       });
@@ -109,7 +127,8 @@ describe('AppointmentService', () => {
 
     it('should propagate error when provider throws network error', async () => {
       mockFactory.getProvider.mockReturnValue({
-        sendAppointmentMessage: jest
+        sendAppointmentMessage: jest.fn(),
+        sendTemplateMessage: jest
           .fn()
           .mockRejectedValue(new Error('Network timeout')),
       });

@@ -22,7 +22,6 @@ export class MetaProvider implements IWhatsAppProvider {
     const { patientName, phoneNumber, appointmentDate } = payload;
 
     if (!phoneNumber || phoneNumber.length < 10) {
-      this.logger.error(`Meta: Invalid phone number: ${phoneNumber}`);
       throw new Error(`Invalid phone number: ${phoneNumber}`);
     }
 
@@ -61,21 +60,39 @@ export class MetaProvider implements IWhatsAppProvider {
     } = payload;
 
     if (!phoneNumber || phoneNumber.length < 10) {
-      this.logger.error(`Meta: Invalid phone number: ${phoneNumber}`);
       throw new Error(`Invalid phone number: ${phoneNumber}`);
     }
 
     const messageId = `meta-tmpl-${crypto.randomUUID()}`;
 
-    const templateBodies: Record<string, string> = {
-      appointment_confirmation: `Hello ${patientName}, your appointment with ${doctorName} at ${hospitalName} is confirmed for ${appointmentDate} at ${appointmentTime}.`,
-      appointment_reminder: `Reminder: ${patientName}, you have an appointment with ${doctorName} at ${hospitalName} tomorrow ${appointmentDate} at ${appointmentTime}.`,
-      appointment_cancellation: `Dear ${patientName}, your appointment with ${doctorName} at ${hospitalName} on ${appointmentDate} at ${appointmentTime} has been cancelled.`,
+    // ✅ Fix 2 & 3: Real Meta Cloud API template payload structure
+    const metaPayload = {
+      messaging_product: 'whatsapp',
+      to: phoneNumber,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: 'en_US' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: patientName },
+              { type: 'text', text: doctorName },
+              { type: 'text', text: appointmentDate },
+              { type: 'text', text: appointmentTime },
+              { type: 'text', text: hospitalName },
+            ],
+          },
+        ],
+      },
     };
 
     this.logger.log(
-      `Meta: Sending template "${templateName}" to ${phoneNumber} | messageId: ${messageId}`,
+      `Meta: Sending template "${templateName}" to ${phoneNumber}`,
     );
+    this.logger.log(`Meta: Payload → ${JSON.stringify(metaPayload)}`);
+
     await new Promise((resolve) => setTimeout(resolve, 80));
 
     return {
@@ -86,6 +103,7 @@ export class MetaProvider implements IWhatsAppProvider {
       templateName,
       status: 'SENT',
       sentAt: new Date().toISOString(),
+      metaPayload, // return actual payload so it's visible in response
     };
   }
 }

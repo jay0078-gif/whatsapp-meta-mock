@@ -93,7 +93,8 @@ export class TemplateService {
   }
 
   private async sendWithRetry(dto: SendTemplateDto) {
-    const provider = this.providerFactory.getProvider();
+    const primaryProvider = this.providerFactory.getProvider();
+    const fallbackProvider = this.providerFactory.getFallbackProvider();
     let lastError: Error | null = null;
     let retryCount = 0;
 
@@ -103,14 +104,17 @@ export class TemplateService {
           `Attempt ${attempt} | template: ${dto.templateName} | to: ${dto.phoneNumber}`,
         );
 
-        const response = await provider.sendTemplateMessage(dto.templateName, {
-          patientName: dto.patientName,
-          doctorName: dto.doctorName,
-          appointmentDate: dto.appointmentDate,
-          appointmentTime: dto.appointmentTime,
-          hospitalName: dto.hospitalName,
-          phoneNumber: dto.phoneNumber,
-        });
+        const response = await primaryProvider.sendTemplateMessage(
+          dto.templateName,
+          {
+            patientName: dto.patientName,
+            doctorName: dto.doctorName,
+            appointmentDate: dto.appointmentDate,
+            appointmentTime: dto.appointmentTime,
+            hospitalName: dto.hospitalName,
+            phoneNumber: dto.phoneNumber,
+          },
+        );
 
         const record = this.templateRepo.create({
           messageId: response.messageId,
@@ -130,7 +134,6 @@ export class TemplateService {
         this.logger.log(
           `Template sent successfully | messageId: ${response.messageId}`,
         );
-
         return { ...response, retryCount };
       } catch (error) {
         lastError = error as Error;
@@ -147,7 +150,51 @@ export class TemplateService {
       }
     }
 
-    // All retries exhausted — save FAILED record
+    // All retries exhausted — try fallback provider
+    this.logger.warn(
+      `Primary failed after ${MAX_RETRIES} attempts — trying fallback provider`,
+    );
+    try {
+      const fallbackResponse = await fallbackProvider.sendTemplateMessage(
+        dto.templateName,
+        {
+          patientName: dto.patientName,
+          doctorName: dto.doctorName,
+          appointmentDate: dto.appointmentDate,
+          appointmentTime: dto.appointmentTime,
+          hospitalName: dto.hospitalName,
+          phoneNumber: dto.phoneNumber,
+        },
+      );
+
+      const fallbackRecord = this.templateRepo.create({
+        messageId: fallbackResponse.messageId,
+        provider: fallbackResponse.provider,
+        templateName: dto.templateName,
+        patientName: dto.patientName,
+        doctorName: dto.doctorName,
+        hospitalName: dto.hospitalName,
+        appointmentDate: dto.appointmentDate,
+        appointmentTime: dto.appointmentTime,
+        phoneNumber: dto.phoneNumber,
+        status: TemplateStatus.SENT,
+        retryCount,
+        failureReason: `Primary failed: ${lastError?.message}. Sent via fallback.`,
+      });
+
+      await this.templateRepo.save(fallbackRecord);
+      this.logger.log(
+        `Fallback provider succeeded | messageId: ${fallbackResponse.messageId}`,
+      );
+      return { ...fallbackResponse, retryCount, usedFallback: true };
+    } catch (fallbackError) {
+      const fallbackErr = fallbackError as Error;
+      this.logger.error(
+        `Fallback provider also failed | reason: ${fallbackErr.message}`,
+      );
+    }
+
+    // Both failed — save FAILED record
     const failedRecord = this.templateRepo.create({
       messageId: `failed-${Date.now()}`,
       provider: 'UNKNOWN',
@@ -164,9 +211,7 @@ export class TemplateService {
     });
 
     await this.templateRepo.save(failedRecord);
-    this.logger.error(
-      `All ${MAX_RETRIES} attempts failed | reason: ${lastError?.message}`,
-    );
+    this.logger.error(`All attempts including fallback failed`);
 
     return {
       success: false,

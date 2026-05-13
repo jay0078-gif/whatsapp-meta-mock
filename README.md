@@ -1,98 +1,247 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# WhatsApp Meta Mock API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A mocked Meta WhatsApp Embedded Signup and Template Message integration built with NestJS, TypeScript, PostgreSQL, and TypeORM.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Overview
 
-## Description
+This project simulates the Meta WhatsApp Cloud API flow for appointment notifications. Since real Meta Business credentials are unavailable, everything is intentionally mocked. The architecture is designed so real Meta APIs can replace mocked logic with minimal changes.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Tech Stack
 
-## Project setup
+- NestJS + TypeScript
+- PostgreSQL + TypeORM
+- Swagger (API Docs)
+- Jest (Testing)
+
+## Setup
 
 ```bash
-$ npm install
+npm install
+cp .env.example .env
+# Edit .env with your database credentials
+npm run start:dev
 ```
 
-## Compile and run the project
+## Environment Variables
+
+```env
+WHATSAPP_PROVIDER=META_WHATSAPP   # or MESSAGE_BIRD
+WEBHOOK_VERIFY_TOKEN=mock_verify_token
+META_APP_SECRET=mock_app_secret
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=postgres
+DB_PASSWORD=postgres
+DB_DATABASE=whatsapp_mock
+```
+
+## Swagger Docs
+
+http://localhost:3000/api-docs
+
+## Architecture
+
+Factory pattern with provider switching via single env variable:
+POST /appointments
+→ AppointmentService
+→ WhatsAppProviderFactory (reads WHATSAPP_PROVIDER)
+→ MetaProvider OR MessageBirdProvider
+→ sendTemplateMessage() with appointment_confirmation template
+
+## API Reference
+
+### Appointments
+
+#### POST /appointments
+Create appointment and send WhatsApp template message.
+
+**Request:**
+```json
+{
+  "patientName": "Jay Patel",
+  "phoneNumber": "919999999999",
+  "appointmentDate": "2026-05-15"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "appointment": {
+    "patientName": "Jay Patel",
+    "phoneNumber": "919999999999",
+    "appointmentDate": "2026-05-15"
+  },
+  "whatsappResponse": {
+    "success": true,
+    "provider": "META_WHATSAPP",
+    "messageId": "meta-tmpl-uuid-001",
+    "templateName": "appointment_confirmation",
+    "status": "SENT",
+    "sentAt": "2026-05-15T10:00:00.000Z"
+  }
+}
+```
+
+---
+
+### Templates
+
+#### POST /templates/confirmation
+Send appointment confirmation template.
+
+**Request:**
+```json
+{
+  "templateName": "appointment_confirmation",
+  "patientName": "Jay Patel",
+  "doctorName": "Dr. Sharma",
+  "appointmentDate": "2026-05-15",
+  "appointmentTime": "10:30 AM",
+  "hospitalName": "City Hospital",
+  "phoneNumber": "919999999999"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "provider": "META_WHATSAPP",
+  "messageId": "meta-tmpl-a1b2c3d4-...",
+  "templateName": "appointment_confirmation",
+  "status": "SENT",
+  "sentAt": "2026-05-15T10:00:00.000Z",
+  "metaPayload": {
+    "messaging_product": "whatsapp",
+    "to": "919999999999",
+    "type": "template",
+    "template": {
+      "name": "appointment_confirmation",
+      "language": { "code": "en_US" },
+      "components": [{
+        "type": "body",
+        "parameters": [
+          { "type": "text", "text": "Jay Patel" },
+          { "type": "text", "text": "Dr. Sharma" },
+          { "type": "text", "text": "2026-05-15" },
+          { "type": "text", "text": "10:30 AM" },
+          { "type": "text", "text": "City Hospital" }
+        ]
+      }]
+    }
+  },
+  "retryCount": 0
+}
+```
+
+#### POST /templates/reminder
+Same request shape as confirmation. Use `templateName: "appointment_reminder"`.
+
+#### POST /templates/cancellation
+Same request shape as confirmation. Use `templateName: "appointment_cancellation"`.
+
+#### POST /templates/webhook/delivery
+Simulate delivery status update from Meta.
+
+**Request:**
+```json
+{
+  "messageId": "meta-tmpl-a1b2c3d4-...",
+  "status": "DELIVERED"
+}
+```
+
+**Failure simulation:**
+```json
+{
+  "messageId": "meta-tmpl-a1b2c3d4-...",
+  "status": "FAILED",
+  "failureReason": "Number not registered on WhatsApp"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "messageId": "meta-tmpl-a1b2c3d4-...",
+  "status": "DELIVERED",
+  "updatedAt": "2026-05-15T10:05:00.000Z"
+}
+```
+
+#### GET /templates/status/:messageId
+Get current delivery status of a template message.
+
+**Response:**
+```json
+{
+  "messageId": "meta-tmpl-a1b2c3d4-...",
+  "templateName": "appointment_confirmation",
+  "provider": "META_WHATSAPP",
+  "status": "DELIVERED",
+  "retryCount": 0,
+  "failureReason": null,
+  "sentAt": "2026-05-15T10:00:00.000Z",
+  "updatedAt": "2026-05-15T10:05:00.000Z"
+}
+```
+
+---
+
+### Meta Signup Flow
+
+#### POST /meta/signup/start
+**Request:**
+```json
+{
+  "businessId": "mock-business-123",
+  "businessName": "Test Clinic",
+  "phoneNumber": "919999999999"
+}
+```
+
+#### POST /meta/signup/callback
+**Request:**
+```json
+{ "fail": false }
+```
+
+#### GET /meta/webhook
+Webhook verification. Use `hub.verify_token=mock_verify_token`.
+
+#### POST /meta/webhook
+Simulate incoming WhatsApp message webhook.
+
+---
+
+## Retry and Fallback Logic
+
+- Primary provider retried up to 3 times with exponential backoff
+- On exhaustion, fallback provider is tried automatically
+- If both fail, status is saved as FAILED with failure reason
+- All attempts persisted to Postgres via TemplateMessage entity
+
+## Template Status Lifecycle
+SENT → DELIVERED
+SENT → FAILED
+
+## Tests
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm run test
+npm run test -- --verbose
 ```
 
-## Run tests
+37 tests across 7 spec files covering all flows including retry, fallback, and status tracking.
 
-```bash
-# unit tests
-$ npm run test
+## Provider Switching
 
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+```env
+WHATSAPP_PROVIDER=META_WHATSAPP   # uses Meta Cloud API structure
+WHATSAPP_PROVIDER=MESSAGE_BIRD    # uses MessageBird structure
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Fallback is always the opposite provider automatically.

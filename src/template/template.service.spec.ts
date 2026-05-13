@@ -36,6 +36,7 @@ const mockTemplateRepo = {
 
 const mockProviderFactory = {
   getProvider: jest.fn(),
+  getFallbackProvider: jest.fn(),
 };
 
 describe('TemplateService', () => {
@@ -43,7 +44,14 @@ describe('TemplateService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+
     mockProviderFactory.getProvider.mockReturnValue({
+      sendTemplateMessage: jest
+        .fn()
+        .mockResolvedValue(mockMetaTemplateResponse),
+    });
+
+    mockProviderFactory.getFallbackProvider.mockReturnValue({
       sendTemplateMessage: jest
         .fn()
         .mockResolvedValue(mockMetaTemplateResponse),
@@ -110,12 +118,19 @@ describe('TemplateService', () => {
   });
 
   describe('retry logic', () => {
-    it('should retry up to 3 times on failure and return FAILED status', async () => {
+    it('should retry up to 3 times on failure then use fallback', async () => {
       const mockSend = jest
         .fn()
         .mockRejectedValue(new Error('Network timeout'));
+      const mockFallbackSend = jest
+        .fn()
+        .mockRejectedValue(new Error('Fallback also failed'));
+
       mockProviderFactory.getProvider.mockReturnValue({
         sendTemplateMessage: mockSend,
+      });
+      mockProviderFactory.getFallbackProvider.mockReturnValue({
+        sendTemplateMessage: mockFallbackSend,
       });
 
       const result = await service.sendConfirmation({
@@ -124,9 +139,36 @@ describe('TemplateService', () => {
       });
 
       expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockFallbackSend).toHaveBeenCalledTimes(1);
       expect(result.success).toBe(false);
       expect(result.status).toBe(TemplateStatus.FAILED);
       expect(result.failureReason).toBe('Network timeout');
+    });
+
+    it('should use fallback provider when primary fails all retries', async () => {
+      const mockSend = jest.fn().mockRejectedValue(new Error('Primary down'));
+      const mockFallbackSend = jest.fn().mockResolvedValue({
+        ...mockMetaTemplateResponse,
+        provider: 'MESSAGE_BIRD',
+        messageId: 'mb-fallback-001',
+      });
+
+      mockProviderFactory.getProvider.mockReturnValue({
+        sendTemplateMessage: mockSend,
+      });
+      mockProviderFactory.getFallbackProvider.mockReturnValue({
+        sendTemplateMessage: mockFallbackSend,
+      });
+
+      const result = await service.sendConfirmation({
+        ...mockTemplatePayload,
+        templateName: TemplateType.CONFIRMATION,
+      });
+
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      expect(mockFallbackSend).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(true);
+      expect((result as any).usedFallback).toBe(true);
     });
 
     it('should succeed on second attempt if first fails', async () => {
