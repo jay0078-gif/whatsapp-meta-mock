@@ -40,7 +40,7 @@ export class SlotManagerService {
   ) {}
 
   // ─── GET AVAILABLE SLOTS ─────────────────────────────────────────────────────
- async getAvailableSlots(
+  async getAvailableSlots(
     specialization?: string,
     doctorName?: string,
     date?: string,
@@ -230,16 +230,6 @@ export class SlotManagerService {
         resolvedDate,
       );
 
-      if (alternatives.length) {
-        this.logger.log(
-          `Alternatives found | count: ${alternatives.length} | for: ${doctor.specialization} on ${resolvedDate}`,
-        );
-      } else {
-        this.logger.warn(
-          `No alternatives found for ${doctor.specialization} on ${resolvedDate}`,
-        );
-      }
-
       return {
         success: false,
         message: `Sorry, ${doctor.name} is fully booked for ${resolvedDate}.`,
@@ -253,7 +243,6 @@ export class SlotManagerService {
     );
 
     if (!isSlotAvailable) {
-      // Slot is either a break slot or doesn't exist
       const alternatives = await this.findAlternatives(
         doctor.specialization,
         resolvedDate,
@@ -261,12 +250,6 @@ export class SlotManagerService {
       this.logger.warn(
         `Slot ${time} unavailable for ${doctor.name} — finding alternatives`,
       );
-
-      if (alternatives.length) {
-        this.logger.log(
-          `Alternatives found | count: ${alternatives.length} | for: ${doctor.specialization} on ${resolvedDate}`,
-        );
-      }
 
       return {
         success: false,
@@ -319,7 +302,6 @@ export class SlotManagerService {
       });
 
     if (doctorName) {
-      // Strip "Dr." prefix for flexible matching
       const namePart = doctorName.replace(/^dr\.?\s*/i, '').trim();
       query.andWhere('LOWER(doctor.name) LIKE LOWER(:name)', {
         name: `%${namePart}%`,
@@ -327,14 +309,11 @@ export class SlotManagerService {
     }
 
     // ── TIME-BASED CANCEL: "cancel my 5 PM appointment" ──────────────────────
-    // time entity comes in as "5 PM" (specific) or "evening" (period)
     if (time) {
       const isPeriod = ['morning', 'afternoon', 'evening'].includes(
         time.toLowerCase(),
       );
       if (isPeriod) {
-        // For period-based cancel, fetch candidates and filter in JS
-        // (SQL can't call matchesTimePeriod)
         const candidates = await query.getMany();
         const match = candidates.find((b) =>
           this.matchesTimePeriod(b.time, time),
@@ -360,7 +339,6 @@ export class SlotManagerService {
           message: `✅ Your appointment with ${match.doctor.name} on ${match.date} at ${match.time} has been cancelled.`,
         };
       } else {
-        // Specific time like "5 PM", "09:00 AM"
         query.andWhere('LOWER(booking.time) = LOWER(:time)', { time });
       }
     }
@@ -413,8 +391,6 @@ export class SlotManagerService {
   }
 
   // ─── FIND ALTERNATIVES ────────────────────────────────────────────────────────
-  // Called when primary slot is unavailable — returns same specialization,
-  // same date but WITHOUT time filter so any available slot qualifies.
   private async findAlternatives(
     specialization: string,
     date: string,
@@ -428,9 +404,17 @@ export class SlotManagerService {
       date,
       undefined,
     );
-    this.logger.log(
-      `Alternative search result | count: ${results.length} | specialization: ${specialization}`,
-    );
+
+    if (results.length > 0) {
+      this.logger.log(
+        `Alternatives available | count: ${results.length} | specialization: ${specialization} | slots: ${results.map((r) => `${r.doctorName}(${r.availableSlots.join(', ')})`).join(' | ')}`,
+      );
+    } else {
+      this.logger.warn(
+        `No alternatives found | specialization: ${specialization} | date: ${date}`,
+      );
+    }
+
     return results;
   }
 
@@ -521,7 +505,6 @@ export class SlotManagerService {
       const monthNum = monthNames[monthStr.toLowerCase().slice(0, 3)];
       const year = today.getFullYear();
       const parsed = new Date(year, monthNum, dayNum);
-      // If the date has already passed this year, assume next year
       if (parsed < localToday) parsed.setFullYear(year + 1);
       return fmt(parsed);
     }
@@ -541,7 +524,6 @@ export class SlotManagerService {
   }
 
   // ─── GET DAY NAME ─────────────────────────────────────────────────────────────
-  // Parses as LOCAL midnight — avoids IST UTC off-by-one bug
   private getDayName(date: string): string {
     const [year, month, day] = date.split('-').map(Number);
     const localDate = new Date(year, month - 1, day);
@@ -551,7 +533,6 @@ export class SlotManagerService {
   }
 
   // ─── MATCH TIME PERIOD ────────────────────────────────────────────────────────
-  // Handles "09:00 AM" (12h), "09:00" (24h), and period names
   matchesTimePeriod(slotTime: string, period: string): boolean {
     const lower = slotTime.toLowerCase();
     const isPM = lower.includes('pm');
