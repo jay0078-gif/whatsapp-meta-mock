@@ -38,6 +38,9 @@ interface UserBooking {
 // Valid specializations the bot supports
 const VALID_SPECIALIZATIONS = ['skin', 'general', 'cardiology', 'pediatrics'];
 
+// Session context expires after 30 minutes of inactivity
+const SESSION_TIMEOUT_MINUTES = 30;
+
 @Injectable()
 export class BotService {
   private readonly logger = new Logger(BotService.name);
@@ -50,6 +53,20 @@ export class BotService {
   ) {}
 
   async handleMessage(userId: string, message: string): Promise<BotResponse> {
+    // ── INPUT SANITY CHECK ────────────────────────────────────────────────────
+    if (!message || message.trim().length === 0) {
+      const fallbackSession = this.sessionRepo.create({ userId, context: {} });
+      return this.reply(
+        fallbackSession,
+        Intent.UNKNOWN,
+        `Please send a message so I can help you. 😊`,
+      );
+    }
+
+    if (message.trim().length > 500) {
+      message = message.trim().slice(0, 500);
+    }
+
     this.logger.log(`Incoming message from userId=${userId}: "${message}"`);
 
     let session = await this.sessionRepo.findOne({ where: { userId } });
@@ -58,14 +75,50 @@ export class BotService {
       this.logger.log(`New session created for userId=${userId}`);
     }
 
+    // ── SESSION TIMEOUT: clear stale context after 30 min inactivity ─────────
+    if (session.updatedAt) {
+      const minutesSinceLastMessage =
+        (Date.now() - new Date(session.updatedAt).getTime()) / 1000 / 60;
+      if (minutesSinceLastMessage > SESSION_TIMEOUT_MINUTES) {
+        this.logger.log(
+          `Session expired for userId=${userId} | idle: ${Math.round(minutesSinceLastMessage)} min — clearing context`,
+        );
+        session.context = {};
+        session.lastIntent = Intent.UNKNOWN;
+      }
+    }
+
     const recognized = this.intentRecognizer.recognize(message);
     this.logger.log(
       `Intent: ${recognized.intent} | confidence: ${recognized.confidence} | entities: ${JSON.stringify(recognized.entities)}`,
     );
 
     const ctx = (session.context ?? {}) as SessionContext;
+    const previousIntent = session.lastIntent as Intent | null;
 
-    // Merge new entities into existing context
+    // ── TOPIC CHANGE DETECTION ────────────────────────────────────────────────
+    // If user sends a real intent that conflicts with the active flow,
+    // clear the old context so it doesn't bleed into the new request.
+    const isExplicitIntent =
+      recognized.intent === Intent.CANCEL_APPOINTMENT ||
+      recognized.intent === Intent.VIEW_APPOINTMENTS ||
+      recognized.intent === Intent.CHECK_AVAILABILITY ||
+      recognized.intent === Intent.BOOK_APPOINTMENT;
+
+    const isTopicChange =
+      isExplicitIntent &&
+      previousIntent !== null &&
+      previousIntent !== recognized.intent &&
+      previousIntent !== Intent.UNKNOWN;
+
+    if (isTopicChange) {
+      this.logger.log(
+        `Topic change detected | ${previousIntent} → ${recognized.intent} — clearing stale context`,
+      );
+      this.clearBookingContext(ctx, session);
+    }
+
+    // Merge new entities into existing context (after topic-change clear)
     if (recognized.entities.specialization)
       ctx.specialization = recognized.entities.specialization;
     if (recognized.entities.doctorName)
@@ -73,22 +126,12 @@ export class BotService {
     if (recognized.entities.date) ctx.date = recognized.entities.date;
     if (recognized.entities.time) ctx.time = recognized.entities.time;
 
-    const previousIntent = session.lastIntent;
-
     session.context = ctx as Record<string, unknown>;
     session.lastMessage = message;
 
     this.logger.log(
       `previousIntent: ${previousIntent} | ctx: ${JSON.stringify(ctx)}`,
     );
-
-    // ── Any real intent always escapes slot-fill mode ─────────────────────────
-    // Only UNKNOWN slot-fill messages ("monday", "morning") stay in the flow
-    const isExplicitIntent =
-      recognized.intent === Intent.CANCEL_APPOINTMENT ||
-      recognized.intent === Intent.VIEW_APPOINTMENTS ||
-      recognized.intent === Intent.CHECK_AVAILABILITY ||
-      recognized.intent === Intent.BOOK_APPOINTMENT;
 
     // ── Mid-booking: still missing date or time ───────────────────────────────
     const isAwaitingBookingSlot =
@@ -183,8 +226,6 @@ export class BotService {
     }
 
     // ── INVALID SPECIALIZATION CHECK ─────────────────────────────────────────
-    // If user gave a specialization but it's not one we support, tell them now
-    // instead of silently proceeding and returning "no slots found" later
     if (
       specialization &&
       !VALID_SPECIALIZATIONS.includes(specialization.toLowerCase())
@@ -208,7 +249,7 @@ export class BotService {
       );
     }
 
-    // ── PAST DATE CHECK (before hitting the DB) ───────────────────────────────
+    // ── PAST DATE CHECK ───────────────────────────────────────────────────────
     const resolvedDate = this.slotManager.resolveDate(date);
     const today = new Date();
     const localToday = new Date(
@@ -220,7 +261,6 @@ export class BotService {
     const bookingDate = new Date(y, m - 1, d);
 
     if (bookingDate < localToday) {
-      // Clear date so next message can set a valid one
       delete ctx.date;
       session.context = ctx as Record<string, unknown>;
       return this.reply(
@@ -253,12 +293,11 @@ export class BotService {
         `No slots found — fetching alternatives for ${specialization ?? doctorName} on ${resolvedDate}`,
       );
 
-      // Re-query without time filter to find any slot that day
       const alternatives = await this.slotManager.getAvailableSlots(
         specialization,
         doctorName,
         date,
-        undefined, // no time filter
+        undefined,
       );
 
       if (alternatives.length) {
@@ -266,7 +305,6 @@ export class BotService {
           `Alternatives found | count: ${alternatives.length} | specialization: ${specialization}`,
         );
         const altText = this.formatAlternatives(alternatives);
-        // Clear only time so user can re-pick a different period
         delete ctx.time;
         session.context = ctx as Record<string, unknown>;
         return this.reply(
@@ -279,7 +317,6 @@ export class BotService {
         );
       }
 
-      // No slots at all for this date — suggest different doctors
       const otherDoctors = specialization
         ? await this.slotManager.getAvailableSlots(
             specialization,
@@ -315,7 +352,9 @@ export class BotService {
     // ── BOOK ──────────────────────────────────────────────────────────────────
     const pick = available[0];
     const slotTime = pick.availableSlots[0];
-    const patientName = ctx.patientName ?? userId;
+
+    // Use stored patientName if set, otherwise default to "Patient" — never use userId
+    const patientName = ctx.patientName ?? 'Patient';
 
     const result: BookingResult = await this.slotManager.bookSlot(
       userId,
@@ -410,7 +449,20 @@ export class BotService {
       userId,
     )) as UserBooking[];
 
-    if (!bookings.length) {
+    // ── FILTER TO UPCOMING ONLY ───────────────────────────────────────────────
+    const today = new Date();
+    const localToday = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+    );
+
+    const upcoming = bookings.filter((b) => {
+      const [y, m, d] = b.date.split('-').map(Number);
+      return new Date(y, m - 1, d) >= localToday;
+    });
+
+    if (!upcoming.length) {
       return this.reply(
         session,
         Intent.VIEW_APPOINTMENTS,
@@ -418,7 +470,7 @@ export class BotService {
       );
     }
 
-    const list = bookings
+    const list = upcoming
       .map(
         (b, i) =>
           `${i + 1}. 👨‍⚕️ ${b.doctorName} (${b.specialization}) — 📅 ${b.date} at 🕐 ${b.time}`,
@@ -429,7 +481,7 @@ export class BotService {
       session,
       Intent.VIEW_APPOINTMENTS,
       `📋 Your upcoming appointments:\n\n${list}`,
-      { total: bookings.length },
+      { total: upcoming.length },
     );
   }
 
@@ -458,7 +510,6 @@ export class BotService {
     );
 
     if (!slots.length) {
-      // Try without date to show when this doctor IS available
       const anytime = await this.slotManager.getAvailableSlots(
         specialization,
         doctorName,
@@ -486,19 +537,29 @@ export class BotService {
       );
     }
 
+    // ── SHOW SLOT TIMES CLEARLY with slot duration ────────────────────────────
     const slotList = slots
       .slice(0, 5)
-      .map(
-        (s, i) =>
-          `${i + 1}. 👨‍⚕️ Dr. ${s.doctorName} — 📅 ${s.date} (${s.availableSlots.slice(0, 3).join(', ')}${s.availableSlots.length > 3 ? '...' : ''})`,
-      )
-      .join('\n');
+      .map((s, i) => {
+        const slotTimes = s.availableSlots.slice(0, 5).join(', ');
+        const more =
+          s.availableSlots.length > 5
+            ? ` (+${s.availableSlots.length - 5} more)`
+            : '';
+        return (
+          `${i + 1}. 👨‍⚕️ ${s.doctorName} (${s.specialization})\n` +
+          `   📅 ${s.date} | 🕐 ${slotTimes}${more}`
+        );
+      })
+      .join('\n\n');
 
     return this.reply(
       session,
       Intent.CHECK_AVAILABILITY,
       `✅ Available slots:\n\n${slotList}` +
-        (slots.length > 5 ? `\n\n...and ${slots.length - 5} more.` : '') +
+        (slots.length > 5
+          ? `\n\n...and ${slots.length - 5} more doctors.`
+          : '') +
         `\n\nSay "book" to schedule one!`,
       { totalDoctors: slots.length },
     );
@@ -523,11 +584,18 @@ export class BotService {
 
   private formatAlternatives(alternatives: SlotAvailability[]): string {
     return alternatives
-      .map(
-        (a, i) =>
-          `${i + 1}. 👨‍⚕️ Dr. ${a.doctorName} (${a.specialization}) — 📅 ${a.date} (${a.availableSlots.slice(0, 3).join(', ')}${a.availableSlots.length > 3 ? '...' : ''})`,
-      )
-      .join('\n');
+      .map((a, i) => {
+        const slotTimes = a.availableSlots.slice(0, 3).join(', ');
+        const more =
+          a.availableSlots.length > 3
+            ? ` (+${a.availableSlots.length - 3} more)`
+            : '';
+        return (
+          `${i + 1}. 👨‍⚕️ ${a.doctorName} (${a.specialization})\n` +
+          `   📅 ${a.date} | 🕐 ${slotTimes}${more}`
+        );
+      })
+      .join('\n\n');
   }
 
   private reply(
