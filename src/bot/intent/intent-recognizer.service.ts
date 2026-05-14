@@ -18,50 +18,128 @@ export interface RecognizedIntent {
 export class IntentRecognizerService {
   private readonly logger = new Logger(IntentRecognizerService.name);
 
+  // ── Specialization keywords + common typos ───────────────────────────────
   private readonly specializationKeywords: Record<string, string[]> = {
-    skin: ['skin', 'dermat', 'dermatologist', 'acne', 'rash', 'eczema'],
+    skin: [
+      'skin',
+      'skinn',
+      'dermat',
+      'dermatologist',
+      'dermatologst',
+      'dermatoligist',
+      'acne',
+      'rash',
+      'eczema',
+      'psoriasis',
+    ],
     general: [
       'general',
+      'generl',
+      'genral',
       'fever',
+      'fevr',
       'cold',
       'flu',
       'gp',
       'physician',
+      'physicain',
+      'physican',
       'regular',
       'checkup',
+      'check up',
+      'check-up',
+      'routine',
+      'common cold',
     ],
     cardiology: [
       'heart',
       'cardio',
       'cardiologist',
+      'cardiologst',
+      'cardiolgy',
+      'cardiologyst',
       'chest pain',
+      'chest ache',
       'cardiac',
       'bp',
       'blood pressure',
+      'heartbeat',
+      'palpitation',
+      'palpitations',
     ],
-    pediatrics: ['child', 'children', 'kids', 'baby', 'pediatric', 'paediatr'],
+    pediatrics: [
+      'child',
+      'children',
+      'kids',
+      'kid',
+      'baby',
+      'infant',
+      'toddler',
+      'pediatric',
+      'paediatric',
+      'paediatr',
+      'pediatr',
+      'peditrician',
+      'pediatrician',
+      'paediatrician',
+    ],
   };
 
+  // ── Time period keywords + common typos ──────────────────────────────────
   private readonly timeKeywords: Record<string, string[]> = {
-    morning: ['morning', 'early'],
-    evening: ['evening', 'after work', 'late'],
-    afternoon: ['afternoon', 'noon', 'lunch time'],
+    morning: ['morning', 'moring', 'morming', 'mornng', 'early', 'am'],
+    afternoon: [
+      'afternoon',
+      'afternooon',
+      'aftrnoon',
+      'aftenoon',
+      'noon',
+      'lunch time',
+      'midday',
+      'mid day',
+    ],
+    evening: [
+      'evening',
+      'evning',
+      'evenin',
+      'eveing',
+      'after work',
+      'pm',
+      'late',
+      'night',
+    ],
   };
 
+  // ── Date keywords + common typos ─────────────────────────────────────────
   private readonly dateKeywords: Record<string, string[]> = {
-    today: ['today', 'now', 'asap', 'tonight'],
-    tomorrow: ['tomorrow', 'next day', 'tmrw', 'tmr'],
-    weekend: ['weekend', 'saturday', 'sunday'],
+    today: [
+      'today',
+      'toady',
+      'tday',
+      'todat',
+      'now',
+      'asap',
+      'this evening',
+      'tonight',
+      'this morning',
+    ],
+    tomorrow: [
+      'tomorrow',
+      'tomorow',
+      'tomrrow',
+      'tomorow',
+      'tmrw',
+      'tmr',
+      'next day',
+    ],
+    monday: ['monday', 'munday', 'mondy', 'mon'],
+    tuesday: ['tuesday', 'tusday', 'tuseday', 'tue', 'tues'],
+    wednesday: ['wednesday', 'wendsday', 'wednessday', 'wendnesday', 'wed'],
+    thursday: ['thursday', 'thurday', 'thurdsay', 'thu', 'thurs'],
+    friday: ['friday', 'firday', 'fridey', 'fri'],
+    saturday: ['saturday', 'satuday', 'saturdey', 'sat'],
+    sunday: ['sunday', 'sundey', 'sundy', 'sun'],
   };
-
-  // Standalone slot-response words — user is answering a bot question
-  private readonly slotResponsePatterns: RegExp[] = [
-    /^(today|tomorrow|tmrw|tmr|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i,
-    /^(morning|afternoon|evening|am|pm)$/i,
-    /^(skin|general|cardiology|pediatrics|cardiologist|dermatologist)$/i,
-    /^\d{4}-\d{2}-\d{2}$/, // ISO date
-    /^\d{1,2}(st|nd|rd|th)?$/i, // "15th"
-  ];
 
   recognize(message: string): RecognizedIntent {
     const normalized = message.toLowerCase().trim();
@@ -78,58 +156,59 @@ export class IntentRecognizerService {
     return { intent, entities, confidence, rawMessage: message };
   }
 
-  /**
-   * Returns true if the message looks like a short slot-answer
-   * (e.g. "tomorrow", "morning", "skin") that the bot asked for.
-   * Used by BotService to route mid-conversation replies correctly.
-   */
-  isSlotResponse(message: string): boolean {
-    const normalized = message.toLowerCase().trim();
-    return this.slotResponsePatterns.some((p) => p.test(normalized));
-  }
-
   private detectIntent(message: string): Intent {
-    const bookPatterns = [
-      /book/i,
-      /appointment/i,
-      /schedule/i,
-      /reserve/i,
-      /i need/i,
-      /i want (a |an )?(doctor|specialist|appointment)/i,
-      /can (i|you) (get|have|book|schedule)/i,
-      /available (slots?|timing|time)/i,
-      /any slots?/i,
-      /looking for (a |an )?(doctor|specialist)/i,
-    ];
-
     const cancelPatterns = [
-      /cancel/i,
-      /cancell/i,
+      /cancell?/i,
       /remove (my )?appointment/i,
       /don'?t (want|need) (the |my )?appointment/i,
       /call off/i,
+      /drop (my |the )?appointment/i,
+      /delete (my |the )?appointment/i,
+      /abort (my |the )?appointment/i,
+      /stop (my |the )?appointment/i,
     ];
 
     const viewPatterns = [
-      /show/i,
-      /view/i,
-      /list/i,
-      /my (appointment|booking)/i,
-      /upcoming/i,
+      /\bshow\b/i,
+      /\bview\b/i,
+      /\blist\b/i,
+      /my (appointment|booking)s?/i,
+      /\bupcoming\b/i,
       /what (appointment|booking)/i,
       /do i have/i,
       /check (my )?appointment/i,
+      /see (my )?(appointment|booking)/i,
+      /get (my )?(appointment|booking)s?/i,
     ];
 
     const availabilityPatterns = [
-      /available/i,
-      /any slots?/i,
       /free (slot|time|timing)/i,
-      /is (dr|doctor).*available/i,
+      /is (dr\.?|doctor)[\w\s]+(available|free|open)/i,
       /when (is|can)/i,
-      /slot available/i,
+      /slots? available/i,
+      /any (available )?(slot|timing|time)/i,
+      /available slot/i,
+      /check (slot|availability|timing)/i,
+      /what (slot|time)s? (is|are) available/i,
     ];
 
+    const bookPatterns = [
+      /\bbook\b/i,
+      /\bschedule\b/i,
+      /\breserve\b/i,
+      // Guard: "appointment" must not fire when "cancel" precedes it
+      /(?<!cancel[^.]{0,30})appointment/i,
+      /i need (a |an )?\w*\s*(doctor|specialist|physician|slot)/i,
+      /i need/i,
+      /i want (a |an )?(doctor|specialist|appointment)/i,
+      /can (i|you) (get|have|book|schedule)/i,
+      /looking for (a |an )?(doctor|specialist)/i,
+      /fix (me )?(a |an )?appointment/i,
+      /set up (a |an )?appointment/i,
+      /get me (a |an )?(appointment|slot|doctor)/i,
+    ];
+
+    // Priority: cancel → view → availability → book
     if (cancelPatterns.some((p) => p.test(message)))
       return Intent.CANCEL_APPOINTMENT;
     if (viewPatterns.some((p) => p.test(message)))
@@ -145,7 +224,7 @@ export class IntentRecognizerService {
   private extractEntities(message: string): RecognizedIntent['entities'] {
     const entities: RecognizedIntent['entities'] = {};
 
-    // Extract specialization
+    // ── Specialization ───────────────────────────────────────────────────────
     for (const [spec, keywords] of Object.entries(
       this.specializationKeywords,
     )) {
@@ -155,13 +234,15 @@ export class IntentRecognizerService {
       }
     }
 
-    // Extract doctor name
-    const doctorMatch = message.match(/dr\.?\s+([a-z]+(?:\s+[a-z]+)?)/i);
+    // ── Doctor name — "Dr. Rajesh", "Dr Rajesh Kumar", etc. ─────────────────
+    const doctorMatch = message.match(
+      /dr\.?\s+([a-z]+(?:\s+(?!available|free|open|on|for|at|today|tomorrow|this|next|and|is|are|was|the)\b[a-z]+)?)/i,
+    );
     if (doctorMatch) {
       entities.doctorName = `Dr. ${doctorMatch[1].trim()}`;
     }
 
-    // Extract date keyword
+    // ── Date ─────────────────────────────────────────────────────────────────
     for (const [date, keywords] of Object.entries(this.dateKeywords)) {
       if (keywords.some((kw) => message.includes(kw))) {
         entities.date = date;
@@ -169,34 +250,27 @@ export class IntentRecognizerService {
       }
     }
 
-    // Extract specific date like "15th may"
-    const specificDate = message.match(
-      /(\d{1,2})(st|nd|rd|th)?(\s+of)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
-    );
+    // Specific date — supports both orders:
+    // "15th may", "1 may", "14 may" (day first)
+    // "may 1st", "may 15", "may 1" (month first)
+    const specificDate =
+      message.match(
+        /(\d{1,2})(st|nd|rd|th)?(\s+of)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
+      ) ||
+      message.match(
+        /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})(st|nd|rd|th)?/i,
+      );
     if (specificDate) {
       entities.date = specificDate[0];
     }
 
-    // Extract ISO date
-    const isoDate = message.match(/\d{4}-\d{2}-\d{2}/);
-    if (isoDate) {
-      entities.date = isoDate[0];
-    }
-
-    // Extract day name as date
-    const dayMatch = message.match(
-      /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
-    );
-    if (dayMatch && !entities.date) {
-      entities.date = dayMatch[1].toLowerCase();
-    }
-
-    // Extract specific time like "10am", "3:30 pm"
-    const specificTime = message.match(/\d{1,2}(:\d{2})?\s*(am|pm)/i);
+    // ── Time ─────────────────────────────────────────────────────────────────
+    // Specific clock time: "5 PM", "9am", "10:30 pm", "5:00 PM"
+    const specificTime = message.match(/\b(\d{1,2})(:\d{2})?\s*(am|pm)\b/i);
     if (specificTime) {
-      entities.time = specificTime[0];
+      entities.time = specificTime[0].trim();
     } else {
-      // Extract time period keyword
+      // Period keywords
       for (const [period, keywords] of Object.entries(this.timeKeywords)) {
         if (keywords.some((kw) => message.includes(kw))) {
           entities.time = period;

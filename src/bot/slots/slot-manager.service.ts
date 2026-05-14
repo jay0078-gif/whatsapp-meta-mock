@@ -39,12 +39,30 @@ export class SlotManagerService {
     private readonly bookingRepo: Repository<Booking>,
   ) {}
 
-  async getAvailableSlots(
+  // ─── GET AVAILABLE SLOTS ─────────────────────────────────────────────────────
+ async getAvailableSlots(
     specialization?: string,
     doctorName?: string,
     date?: string,
     time?: string,
   ): Promise<SlotAvailability[]> {
+    // ── RESOLVE SPECIALIZATION FROM DOCTOR NAME (DB lookup, no hardcoding) ───
+    if (doctorName && !specialization) {
+      const namePart = doctorName.replace(/^dr\.?\s*/i, '').trim();
+      const doctor = await this.doctorRepo
+        .createQueryBuilder('doctor')
+        .where('LOWER(doctor.name) LIKE LOWER(:name)', {
+          name: `%${namePart}%`,
+        })
+        .getOne();
+      if (doctor) {
+        specialization = doctor.specialization;
+        this.logger.log(
+          `Resolved specialization from doctor name | "${doctorName}" → "${specialization}"`,
+        );
+      }
+    }
+
     const resolvedDate = this.resolveDate(date ?? 'today');
     const dayName = this.getDayName(resolvedDate);
 
@@ -56,7 +74,9 @@ export class SlotManagerService {
       .createQueryBuilder('doctor')
       .leftJoinAndSelect('doctor.slots', 'slot')
       .where('doctor.isActive = :active', { active: true })
-      .andWhere('doctor.availableDays LIKE :day', { day: `%${dayName}%` });
+      .andWhere('LOWER(doctor.availableDays) LIKE :day', {
+        day: `%${dayName}%`,
+      });
 
     if (specialization) {
       query = query.andWhere('LOWER(doctor.specialization) = LOWER(:spec)', {
@@ -65,8 +85,10 @@ export class SlotManagerService {
     }
 
     if (doctorName) {
+      // Strip "Dr." prefix for matching so "Dr. rajesh" → "rajesh" still matches
+      const namePart = doctorName.replace(/^dr\.?\s*/i, '').trim();
       query = query.andWhere('LOWER(doctor.name) LIKE LOWER(:name)', {
-        name: `%${doctorName}%`,
+        name: `%${namePart}%`,
       });
     }
 
@@ -74,7 +96,7 @@ export class SlotManagerService {
 
     if (!doctors.length) {
       this.logger.warn(
-        `No doctors found for specialization: ${specialization} on ${dayName}`,
+        `No doctors found | specialization: ${specialization} | day: ${dayName}`,
       );
       return [];
     }
@@ -107,7 +129,7 @@ export class SlotManagerService {
       const bookedTimeSet = new Set(bookedTimes.map((b) => b.time));
 
       const availableSlots = doctor.slots
-        .filter((slot) => slot.type === SlotType.AVAILABLE)
+        .filter((slot) => slot.type === SlotType.AVAILABLE) // skip BREAK slots
         .filter((slot) => !bookedTimeSet.has(slot.time))
         .filter((slot) =>
           time ? this.matchesTimePeriod(slot.time, time) : true,
@@ -130,6 +152,7 @@ export class SlotManagerService {
     return results;
   }
 
+  // ─── BOOK SLOT ───────────────────────────────────────────────────────────────
   async bookSlot(
     userId: string,
     patientName: string,
@@ -139,12 +162,23 @@ export class SlotManagerService {
   ): Promise<BookingResult> {
     const resolvedDate = this.resolveDate(date);
 
-    // Past date check
-    if (new Date(resolvedDate) < new Date(new Date().toDateString())) {
-      this.logger.warn(`Attempted booking for past date: ${resolvedDate}`);
+    // ── PAST DATE GUARD ───────────────────────────────────────────────────────
+    const today = new Date();
+    const localToday = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+    );
+    const [y, m, d] = resolvedDate.split('-').map(Number);
+    const bookingDate = new Date(y, m - 1, d);
+
+    if (bookingDate < localToday) {
+      this.logger.warn(
+        `Past date booking attempt | date: ${resolvedDate} | userId: ${userId}`,
+      );
       return {
         success: false,
-        message: `Cannot book appointments for past dates. Please choose a future date.`,
+        message: `❌ Cannot book appointments for past dates. "${resolvedDate}" has already passed. Please choose today or a future date.`,
       };
     }
 
@@ -157,7 +191,7 @@ export class SlotManagerService {
       return { success: false, message: `Doctor not found.` };
     }
 
-    // Duplicate booking check
+    // ── DUPLICATE BOOKING GUARD ───────────────────────────────────────────────
     const duplicate = await this.bookingRepo.findOne({
       where: {
         userId,
@@ -170,15 +204,15 @@ export class SlotManagerService {
 
     if (duplicate) {
       this.logger.warn(
-        `Duplicate booking attempt | userId: ${userId} | doctor: ${doctor.name} | ${resolvedDate} ${time}`,
+        `Duplicate booking blocked | userId: ${userId} | doctor: ${doctor.name} | ${resolvedDate} ${time}`,
       );
       return {
         success: false,
-        message: `You already have an appointment with ${doctor.name} on ${resolvedDate} at ${time}.`,
+        message: `⚠️ You already have an appointment with ${doctor.name} on ${resolvedDate} at ${time}. No duplicate booking created.`,
       };
     }
 
-    // Daily limit check
+    // ── DAILY LIMIT CHECK ─────────────────────────────────────────────────────
     const bookingsToday = await this.bookingRepo.count({
       where: {
         doctor: { id: doctorId },
@@ -195,6 +229,17 @@ export class SlotManagerService {
         doctor.specialization,
         resolvedDate,
       );
+
+      if (alternatives.length) {
+        this.logger.log(
+          `Alternatives found | count: ${alternatives.length} | for: ${doctor.specialization} on ${resolvedDate}`,
+        );
+      } else {
+        this.logger.warn(
+          `No alternatives found for ${doctor.specialization} on ${resolvedDate}`,
+        );
+      }
+
       return {
         success: false,
         message: `Sorry, ${doctor.name} is fully booked for ${resolvedDate}.`,
@@ -202,18 +247,35 @@ export class SlotManagerService {
       };
     }
 
-    // Slot availability check
+    // ── SLOT AVAILABILITY CHECK ───────────────────────────────────────────────
     const isSlotAvailable = doctor.slots.some(
       (s) => s.time === time && s.type === SlotType.AVAILABLE,
     );
 
     if (!isSlotAvailable) {
+      // Slot is either a break slot or doesn't exist
+      const alternatives = await this.findAlternatives(
+        doctor.specialization,
+        resolvedDate,
+      );
+      this.logger.warn(
+        `Slot ${time} unavailable for ${doctor.name} — finding alternatives`,
+      );
+
+      if (alternatives.length) {
+        this.logger.log(
+          `Alternatives found | count: ${alternatives.length} | for: ${doctor.specialization} on ${resolvedDate}`,
+        );
+      }
+
       return {
         success: false,
-        message: `The slot ${time} is not available for ${doctor.name}.`,
+        message: `The slot ${time} is not available for ${doctor.name} (it may be a break or already booked).`,
+        alternatives,
       };
     }
 
+    // ── CONFIRM BOOKING ───────────────────────────────────────────────────────
     const booking = this.bookingRepo.create({
       userId,
       patientName,
@@ -241,6 +303,7 @@ export class SlotManagerService {
     };
   }
 
+  // ─── CANCEL BOOKING ──────────────────────────────────────────────────────────
   async cancelBooking(
     userId: string,
     doctorName?: string,
@@ -256,17 +319,59 @@ export class SlotManagerService {
       });
 
     if (doctorName) {
+      // Strip "Dr." prefix for flexible matching
+      const namePart = doctorName.replace(/^dr\.?\s*/i, '').trim();
       query.andWhere('LOWER(doctor.name) LIKE LOWER(:name)', {
-        name: `%${doctorName}%`,
+        name: `%${namePart}%`,
       });
     }
 
+    // ── TIME-BASED CANCEL: "cancel my 5 PM appointment" ──────────────────────
+    // time entity comes in as "5 PM" (specific) or "evening" (period)
     if (time) {
-      query.andWhere('booking.time = :time', { time });
+      const isPeriod = ['morning', 'afternoon', 'evening'].includes(
+        time.toLowerCase(),
+      );
+      if (isPeriod) {
+        // For period-based cancel, fetch candidates and filter in JS
+        // (SQL can't call matchesTimePeriod)
+        const candidates = await query.getMany();
+        const match = candidates.find((b) =>
+          this.matchesTimePeriod(b.time, time),
+        );
+
+        if (!match) {
+          this.logger.warn(
+            `No booking found to cancel | userId: ${userId} | time period: ${time}`,
+          );
+          return {
+            success: false,
+            message: `No matching appointment found to cancel.`,
+          };
+        }
+
+        match.status = BookingStatus.CANCELLED;
+        await this.bookingRepo.save(match);
+        this.logger.log(
+          `Booking cancelled | id: ${match.id} | time period match: ${time}`,
+        );
+        return {
+          success: true,
+          message: `✅ Your appointment with ${match.doctor.name} on ${match.date} at ${match.time} has been cancelled.`,
+        };
+      } else {
+        // Specific time like "5 PM", "09:00 AM"
+        query.andWhere('LOWER(booking.time) = LOWER(:time)', { time });
+      }
     }
 
+    // ── DATE FILTER (only for non-today specific dates) ───────────────────────
     if (date) {
-      query.andWhere('booking.date = :date', { date: this.resolveDate(date) });
+      const resolved = this.resolveDate(date);
+      const today = this.resolveDate('today');
+      if (resolved !== today) {
+        query.andWhere('booking.date = :date', { date: resolved });
+      }
     }
 
     const booking = await query.getOne();
@@ -285,10 +390,11 @@ export class SlotManagerService {
 
     return {
       success: true,
-      message: `Your appointment with ${booking.doctor.name} on ${booking.date} at ${booking.time} has been cancelled.`,
+      message: `✅ Your appointment with ${booking.doctor.name} on ${booking.date} at ${booking.time} has been cancelled.`,
     };
   }
 
+  // ─── VIEW USER BOOKINGS ───────────────────────────────────────────────────────
   async getUserBookings(userId: string): Promise<any[]> {
     const bookings = await this.bookingRepo.find({
       where: { userId, status: BookingStatus.CONFIRMED },
@@ -306,49 +412,160 @@ export class SlotManagerService {
     }));
   }
 
+  // ─── FIND ALTERNATIVES ────────────────────────────────────────────────────────
+  // Called when primary slot is unavailable — returns same specialization,
+  // same date but WITHOUT time filter so any available slot qualifies.
   private async findAlternatives(
     specialization: string,
     date: string,
   ): Promise<SlotAvailability[]> {
     this.logger.log(
-      `Finding alternative slots for ${specialization} on ${date}`,
+      `Finding alternative slots | specialization: ${specialization} | date: ${date}`,
     );
-    return this.getAvailableSlots(specialization, undefined, date);
+    const results = await this.getAvailableSlots(
+      specialization,
+      undefined,
+      date,
+      undefined,
+    );
+    this.logger.log(
+      `Alternative search result | count: ${results.length} | specialization: ${specialization}`,
+    );
+    return results;
   }
 
+  // ─── RESOLVE DATE ─────────────────────────────────────────────────────────────
   resolveDate(input: string): string {
     const today = new Date();
-    if (input === 'today' || input === 'now' || input === 'asap') {
-      return today.toISOString().split('T')[0];
+    const localToday = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+    );
+
+    const fmt = (d: Date): string => {
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    };
+
+    if (!input || ['today', 'now', 'asap'].includes(input.toLowerCase())) {
+      return fmt(localToday);
     }
+
     if (
-      input === 'tomorrow' ||
-      input === 'tmrw' ||
-      input === 'tmr' ||
-      input === 'next day'
+      ['tomorrow', 'tmrw', 'tmr', 'next day', 'tomorow', 'tomrrow'].includes(
+        input.toLowerCase(),
+      )
     ) {
-      const tomorrow = new Date(today);
-      tomorrow.setDate(today.getDate() + 1);
-      return tomorrow.toISOString().split('T')[0];
+      const tomorrow = new Date(localToday);
+      tomorrow.setDate(localToday.getDate() + 1);
+      return fmt(tomorrow);
     }
-    if (input === 'weekend' || input === 'saturday') {
-      const sat = new Date(today);
-      sat.setDate(today.getDate() + ((6 - today.getDay()) % 7 || 7));
-      return sat.toISOString().split('T')[0];
+
+    const weekdays: Record<string, number> = {
+      sunday: 0,
+      sun: 0,
+      monday: 1,
+      mon: 1,
+      tuesday: 2,
+      tue: 2,
+      tues: 2,
+      wednesday: 3,
+      wed: 3,
+      thursday: 4,
+      thu: 4,
+      thurs: 4,
+      friday: 5,
+      fri: 5,
+      saturday: 6,
+      sat: 6,
+    };
+
+    const targetDay = weekdays[input.toLowerCase()];
+    if (targetDay !== undefined) {
+      const result = new Date(localToday);
+      const currentDay = localToday.getDay();
+      const daysUntil = (targetDay - currentDay + 7) % 7 || 7;
+      result.setDate(localToday.getDate() + daysUntil);
+      return fmt(result);
     }
-    return today.toISOString().split('T')[0];
+
+    // ── Named month dates: "may 1st", "may 15", "15 may", "1st may" ──────────
+    const monthNames: Record<string, number> = {
+      jan: 0,
+      feb: 1,
+      mar: 2,
+      apr: 3,
+      may: 4,
+      jun: 5,
+      jul: 6,
+      aug: 7,
+      sep: 8,
+      oct: 9,
+      nov: 10,
+      dec: 11,
+    };
+    const monthFirst = input.match(
+      /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})(st|nd|rd|th)?/i,
+    );
+    const dayFirst = input.match(
+      /(\d{1,2})(st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
+    );
+    const mf = monthFirst || dayFirst;
+    if (mf) {
+      const isMonthFirst = monthFirst !== null;
+      const monthStr = isMonthFirst ? mf[1] : mf[3];
+      const dayNum = isMonthFirst ? parseInt(mf[2]) : parseInt(mf[1]);
+      const monthNum = monthNames[monthStr.toLowerCase().slice(0, 3)];
+      const year = today.getFullYear();
+      const parsed = new Date(year, monthNum, dayNum);
+      // If the date has already passed this year, assume next year
+      if (parsed < localToday) parsed.setFullYear(year + 1);
+      return fmt(parsed);
+    }
+
+    // Explicit ISO date e.g. "2026-05-20"
+    const parts = input.split('-');
+    if (parts.length === 3) {
+      const parsed = new Date(
+        parseInt(parts[0]),
+        parseInt(parts[1]) - 1,
+        parseInt(parts[2]),
+      );
+      if (!isNaN(parsed.getTime())) return fmt(parsed);
+    }
+
+    return fmt(localToday);
   }
 
+  // ─── GET DAY NAME ─────────────────────────────────────────────────────────────
+  // Parses as LOCAL midnight — avoids IST UTC off-by-one bug
   private getDayName(date: string): string {
-    return new Date(date)
+    const [year, month, day] = date.split('-').map(Number);
+    const localDate = new Date(year, month - 1, day);
+    return localDate
       .toLocaleDateString('en-US', { weekday: 'long' })
       .toLowerCase();
   }
 
-  private matchesTimePeriod(slotTime: string, period: string): boolean {
+  // ─── MATCH TIME PERIOD ────────────────────────────────────────────────────────
+  // Handles "09:00 AM" (12h), "09:00" (24h), and period names
+  matchesTimePeriod(slotTime: string, period: string): boolean {
+    const lower = slotTime.toLowerCase();
+    const isPM = lower.includes('pm');
+    const isAM = lower.includes('am');
     const hour = parseInt(slotTime.split(':')[0]);
-    const isPM = slotTime.toLowerCase().includes('pm');
-    const hour24 = isPM && hour !== 12 ? hour + 12 : hour;
+
+    let hour24: number;
+    if (isPM && hour !== 12) {
+      hour24 = hour + 12;
+    } else if (isAM && hour === 12) {
+      hour24 = 0;
+    } else {
+      hour24 = hour;
+    }
 
     switch (period.toLowerCase()) {
       case 'morning':
