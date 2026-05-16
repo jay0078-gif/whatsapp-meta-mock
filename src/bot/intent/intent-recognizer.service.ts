@@ -226,6 +226,9 @@ export class IntentRecognizerService {
       /available slot/i,
       /check (slot|availability|timing)/i,
       /what (slot|time)s? (is|are) available/i,
+      /is any.*available/i, // ← add this
+      /available.*doctor/i, // ← add this
+      /doctor.*available/i, // ← add this
     ];
 
     const bookPatterns = [
